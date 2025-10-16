@@ -73,7 +73,7 @@ struct WebView: UIViewRepresentable {
         """
 
         logger.log("📄 Loading HTML into WebView")
-        webView.loadHTMLString(html, baseURL: URL(string: "https://france.tv")!)
+        webView.loadHTMLString(html, baseURL: URL(string: "https://<your domain>")!)
 
         return webView
     }

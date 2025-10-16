@@ -38,7 +38,7 @@ class MainActivity : AppCompatActivity() {
                 if (url.contains("terrific.live/terrific-sdk.js")) {
                     return try {
                         val connection = java.net.URL(url).openConnection()
-                        connection.setRequestProperty("Origin", "https://france.tv")
+                        connection.setRequestProperty("Origin", "https://<your domain>")
                         val inputStream = connection.getInputStream()
                         WebResourceResponse("application/javascript", "UTF-8", inputStream)
                     } catch (e: Exception) {
@@ -76,7 +76,7 @@ class MainActivity : AppCompatActivity() {
             </html>
         """.trimIndent()
 
-        webView.loadDataWithBaseURL("https://france.tv", html, "text/html", "UTF-8", null)
+        webView.loadDataWithBaseURL("https://<your domain>", html, "text/html", "UTF-8", null)
     }
 
     class JSBridge {

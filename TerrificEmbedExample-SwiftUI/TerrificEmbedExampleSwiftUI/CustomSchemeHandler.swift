@@ -12,7 +12,7 @@ class CustomSchemeHandler: NSObject, WKURLSchemeHandler {
     // The actual SDK URL
     private let terrificSDKURL = URL(string: "https://terrific.live/terrific-sdk.js")!
     // The origin you want to simulate
-    private let simulatedOrigin = "https://france.tv"
+    private let simulatedOrigin = "https://<your domain>"
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         var request = URLRequest(url: terrificSDKURL)

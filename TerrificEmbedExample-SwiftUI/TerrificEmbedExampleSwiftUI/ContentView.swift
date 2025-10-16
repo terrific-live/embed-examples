@@ -9,7 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        WebView(storeId: "<your store id>", embeddingId: "<your embedding id>")
+        WebView(storeId: "nzRdWaBc1JPk2XN3B9bp", embeddingId: "9iM1LIQ3DHqs06jyxuuq")
             .edgesIgnoringSafeArea(.all)
     }
 }

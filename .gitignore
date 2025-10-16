@@ -19,3 +19,36 @@ Package.resolved
 # CocoaPods / Carthage (if used)
 Pods/
 Carthage/
+
+
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Local configuration
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# Logs and temp
+*.log
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Keystore
+*.jks
+*.keystore
+
+# APK / AAB
+*.apk
+*.aab
+
+# Misc
+captures/
+output.json

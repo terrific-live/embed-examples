@@ -1,11 +1,52 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:orientation="vertical"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootScrollView"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
+    <LinearLayout
+        android:orientation="vertical"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <!-- Native content on top of the WebView -->
+        <TextView
+            android:id="@+id/nativeHeaderTitle"
+            android:layout_width="match_parent"
+            android:layout_height="800dp"
+            android:padding="24dp"
+            android:background="#FFECE4"
+            android:text="Native header above WebView"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/nativeHeaderBody"
+            android:layout_width="match_parent"
+            android:layout_height="800dp"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:paddingBottom="24dp"
+            android:background="#E4F2FF"
+            android:text="Scroll down to reach the embedded Terrific carousel. This area is pure native UI on top of the WebView." />
+
+        <!-- WebView below the native content.
+             Height is set programmatically to at least the screen height
+             so its internal fullscreen behavior still works correctly. -->
     <WebView
         android:id="@+id/webView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+            android:layout_height="400dp" />
+
+        <!-- Native content below the WebView -->
+        <TextView
+            android:id="@+id/nativeFooter"
+            android:layout_width="match_parent"
+            android:layout_height="800dp"
+            android:padding="24dp"
+            android:background="#E8FFE4"
+            android:text="Native footer below WebView"
+            android:textSize="18sp" />
+
 </LinearLayout>
+</ScrollView>

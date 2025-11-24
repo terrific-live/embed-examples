@@ -34,7 +34,7 @@ class MainActivity : AppCompatActivity() {
         val displayMetrics = resources.displayMetrics
         val screenHeight = displayMetrics.heightPixels
         expandedWebViewHeightPx = screenHeight
-        collapsedWebViewHeightPx = (800 * displayMetrics.density).toInt()
+        collapsedWebViewHeightPx = (450 * displayMetrics.density).toInt()
 
         // Start in collapsed mode so the WebView is NOT full-screen initially.
         webView.layoutParams = webView.layoutParams.apply {
@@ -227,8 +227,7 @@ class MainActivity : AppCompatActivity() {
             </head>
             <body style="margin:0;padding:0;">
                 <div data-source="terrific" embedding-id="9iM1LIQ3DHqs06jyxuuq"
-                     style="height:400px;background:#fafafa;">
-                     <p style="text-align:center;margin-top:50%;">Loading Terrific...</p>
+                     num-of-items="10" style="height: 450px"">
                 </div>
             </body>
             </html>

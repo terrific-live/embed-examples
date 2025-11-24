@@ -20,6 +20,7 @@ class MainActivity : AppCompatActivity() {
     private var isWebViewFullscreen: Boolean = false
     private var collapsedWebViewHeightPx: Int = 0
     private var expandedWebViewHeightPx: Int = 0
+    private var scrollYBeforeFullscreen: Int = 0
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -112,10 +113,15 @@ class MainActivity : AppCompatActivity() {
                 lp.height = if (fullscreen) expandedWebViewHeightPx else collapsedWebViewHeightPx
                 webView.layoutParams = lp
 
-                // When fullscreen opens, scroll the parent so the WebView fills the screen
-                // (no native header/footer visible).
                 if (fullscreen) {
+                    // Remember where the user was in the app before fullscreen,
+                    // then bring the WebView into full view (centered on screen).
+                    scrollYBeforeFullscreen = scrollView.scrollY
                     scrollView.smoothScrollTo(0, webView.top)
+                } else {
+                    // Restore the previous scroll position so the user returns
+                    // to the exact same place in the app.
+                    scrollView.smoothScrollTo(0, scrollYBeforeFullscreen)
                 }
             }
             // When fullscreen is closed, immediately allow the parent ScrollView

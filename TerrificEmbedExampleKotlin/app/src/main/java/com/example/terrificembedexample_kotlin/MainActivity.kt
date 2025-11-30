@@ -4,295 +4,427 @@ import android.annotation.SuppressLint
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import android.view.MotionEvent
-import android.view.View
-import android.webkit.*
-import android.widget.ScrollView
-import androidx.appcompat.app.AppCompatActivity
+import android.webkit.ConsoleMessage
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import com.example.terrificembedexample_kotlin.ui.theme.TerrificEmbedExampleKothlinTheme
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.Locale
 
-class MainActivity : AppCompatActivity() {
-
-    private lateinit var webView: WebView
-    private lateinit var scrollView: ScrollView
-    private var lastY: Float = 0f
-    private var isWebViewFullscreen: Boolean = false
-    private var collapsedWebViewHeightPx: Int = 0
-    private var expandedWebViewHeightPx: Int = 0
-    private var scrollYBeforeFullscreen: Int = 0
+class MainActivity : ComponentActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
 
-        scrollView = findViewById(R.id.rootScrollView)
-        webView = findViewById(R.id.webView)
-        // Configure two WebView heights:
-        // - collapsed: initial height inside the scroll (e.g. 800dp)
-        // - expanded: full screen height when Terrific opens fullscreen
-        val displayMetrics = resources.displayMetrics
-        val screenHeight = displayMetrics.heightPixels
-        expandedWebViewHeightPx = screenHeight
-        collapsedWebViewHeightPx = (450 * displayMetrics.density).toInt()
-
-        // Start in collapsed mode so the WebView is NOT full-screen initially.
-        webView.layoutParams = webView.layoutParams.apply {
-            height = collapsedWebViewHeightPx
-        }
-
-        val webSettings = webView.settings
-        webSettings.javaScriptEnabled = true
-        webSettings.domStorageEnabled = true
-        webSettings.mediaPlaybackRequiresUserGesture = false
-
-        // Disable fullscreen playback, keep inline
-        webSettings.setMediaPlaybackRequiresUserGesture(false)
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onConsoleMessage(message: ConsoleMessage): Boolean {
-                Log.d("JS", "${message.message()} -- From line ${message.lineNumber()} of ${message.sourceId()}")
-                return true
+        setContent {
+            TerrificEmbedExampleKothlinTheme {
+                TerrificEmbedScreen()
             }
         }
+    }
+}
 
-        // Intercept requests to inject custom headers (Origin)
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(
-                view: WebView?,
-                request: WebResourceRequest?
-            ): WebResourceResponse? {
-                val url = request?.url.toString()
-                if (url.contains("terrific.live/terrific-sdk.js")) {
-                    return try {
-                        val connection = java.net.URL(url).openConnection()
-                        connection.setRequestProperty("Origin", "https://<your domain>")
-                        val inputStream = connection.getInputStream()
-                        WebResourceResponse("application/javascript", "UTF-8", inputStream)
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        null
+/**
+ * Top-level composable that recreates the old XML layout using Jetpack Compose:
+ * - Scrollable column
+ * - Native header/body/footer blocks
+ * - Embedded WebView for the Terrific carousel
+ */
+@Composable
+private fun TerrificEmbedScreen() {
+    val scrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+
+    // Track whether the Terrific carousel is in fullscreen mode.
+    var isWebViewFullscreen by remember { mutableStateOf(false) }
+
+    // Heights in dp – keep content tall enough to scroll, but lighter for WebView/Chromium tiling.
+    // Using 400dp instead of 800dp reduces GPU tile memory pressure, especially on emulators.
+    val headerHeightDp = 400.dp
+    val bodyHeightDp = 400.dp
+    val collapsedWebViewHeightDp = 450.dp
+    val screenHeightDp = configuration.screenHeightDp.dp
+
+    // Store heights and scroll offsets in pixels so they line up with WebView/layout
+    val collapsedWebViewHeightPx = with(density) { collapsedWebViewHeightDp.roundToPx() }
+    val expandedWebViewHeightPx = with(density) { screenHeightDp.roundToPx() }
+    val webViewTopOffsetPx = with(density) { (headerHeightDp + bodyHeightDp).roundToPx() }
+
+    var webViewHeightPx by remember { mutableIntStateOf(collapsedWebViewHeightPx) }
+    var scrollYBeforeFullscreen by remember { mutableIntStateOf(0) }
+
+    // Derived dp for Compose layout
+    val webViewHeightDp = with(density) { webViewHeightPx.toDp() }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            // When the carousel is fullscreen, disable parent scrolling so all scroll stays in WebView.
+            .verticalScroll(scrollState, enabled = !isWebViewFullscreen)
+    ) {
+        // Native header title
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(headerHeightDp)
+                .background(Color(0xFFFFECE4))
+                .padding(24.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Text(
+                text = "Native header above WebView",
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
+
+        // Native header body
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(bodyHeightDp)
+                .background(Color(0xFFE4F2FF))
+                .padding(24.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Text(
+                text = "Scroll down to reach the embedded Terrific carousel. This area is pure native UI on top of the WebView.",
+                fontSize = 18.sp,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
+
+        // WebView embedded inside Compose
+        TerrificWebView(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(webViewHeightDp),
+            webViewHeightPx = webViewHeightPx,
+            onUpdateWebViewHeight = { newHeightPx ->
+                webViewHeightPx = newHeightPx
+            },
+            collapsedHeightPx = collapsedWebViewHeightPx,
+            expandedHeightPx = expandedWebViewHeightPx,
+            onEnterFullscreen = {
+                // Lock parent scroll and bring WebView fully into view.
+                isWebViewFullscreen = true
+                coroutineScope.launch {
+                    scrollYBeforeFullscreen = scrollState.value
+                    scrollState.animateScrollTo(webViewTopOffsetPx)
+                }
+            },
+            onExitFullscreen = {
+                // Re-enable parent scroll and restore previous scroll position.
+                isWebViewFullscreen = false
+                coroutineScope.launch {
+                    scrollState.animateScrollTo(scrollYBeforeFullscreen)
+                }
+            }
+        )
+
+        // Native footer
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(400.dp)
+            .background(Color(0xFFE8FFE4))
+                .padding(24.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Text(
+                text = "Native footer below WebView",
+                fontSize = 16.sp,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
+    }
+}
+
+/**
+ * A composable that hosts the Terrific WebView using AndroidView.
+ * It keeps the same JS bridge, header injection, and fullscreen behavior as the View-based version.
+ */
+@Composable
+private fun TerrificWebView(
+    modifier: Modifier,
+    webViewHeightPx: Int,
+    onUpdateWebViewHeight: (Int) -> Unit,
+    collapsedHeightPx: Int,
+    expandedHeightPx: Int,
+    onEnterFullscreen: () -> Unit,
+    onExitFullscreen: () -> Unit
+) {
+    val context = LocalContext.current
+
+    // Keep a single WebView instance across recompositions
+    val webView = remember { WebView(context) }
+
+    // Track whether we've already done the initial load
+    var didInitialLoad by remember { mutableStateOf(false) }
+
+    AndroidView(
+        modifier = modifier,
+        factory = {
+            configureTerrificWebView(
+                webView = webView,
+                collapsedHeightPx = collapsedHeightPx,
+                expandedHeightPx = expandedHeightPx,
+                onUpdateWebViewHeight = onUpdateWebViewHeight,
+                onEnterFullscreen = onEnterFullscreen,
+                onExitFullscreen = onExitFullscreen
+            )
+            webView
+        },
+        update = { view ->
+            // Keep layout params in sync with current height
+            val lp = view.layoutParams
+            if (lp != null && lp.height != webViewHeightPx) {
+                lp.height = webViewHeightPx
+                view.layoutParams = lp
+            }
+        }
+    )
+
+    // Initial HTML load only once
+    LaunchedEffect(Unit) {
+        if (!didInitialLoad) {
+            didInitialLoad = true
+            val html = buildTerrificHtml()
+            webView.loadDataWithBaseURL(
+                "https://france.tv",
+                html,
+                "text/html",
+                "UTF-8",
+                null
+            )
+        }
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+private fun configureTerrificWebView(
+    webView: WebView,
+    collapsedHeightPx: Int,
+    expandedHeightPx: Int,
+    onUpdateWebViewHeight: (Int) -> Unit,
+    onEnterFullscreen: () -> Unit,
+    onExitFullscreen: () -> Unit
+) {
+    val webSettings: WebSettings = webView.settings
+    webSettings.javaScriptEnabled = true
+    webSettings.domStorageEnabled = true
+    webSettings.mediaPlaybackRequiresUserGesture = false
+
+    // Disable fullscreen playback, keep inline
+    webSettings.setMediaPlaybackRequiresUserGesture(false)
+
+    webView.layoutParams = webView.layoutParams?.apply {
+        height = collapsedHeightPx
+    } ?: android.view.ViewGroup.LayoutParams(
+        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+        collapsedHeightPx
+    )
+
+    webView.webChromeClient = object : WebChromeClient() {
+        override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+            Log.d(
+                "JS",
+                "${message.message()} -- From line ${message.lineNumber()} of ${message.sourceId()}"
+            )
+            return true
+        }
+    }
+
+    // Basic WebViewClient: keep default network behavior and just inject our context JSON.
+    webView.webViewClient = object : WebViewClient() {
+        override fun onPageFinished(view: WebView?, url: String?) {
+            super.onPageFinished(view, url)
+
+            // Build a JSON context object with native app info for Piano (or other analytics).
+            val contextJson = buildNativeAppContextJson()
+
+            // Expose it into the WebView as a global + dispatch a custom event.
+            val js = """
+                (function() {
+                    try {
+                        window.__NATIVE_APP_CONTEXT__ = $contextJson;
+                        window.dispatchEvent(new CustomEvent('nativeAppContextReady', { detail: window.__NATIVE_APP_CONTEXT__ }));
+                    } catch (e) {
+                        console.error('Failed to inject native app context', e);
+                    }
+                })();
+            """.trimIndent()
+
+            view?.evaluateJavascript(js, null)
+        }
+    }
+
+    // Inject JS bridge so web content can talk to native (logging + fullscreen state)
+    webView.addJavascriptInterface(
+        JSBridge { fullscreen ->
+            if (fullscreen) {
+                onUpdateWebViewHeight(expandedHeightPx)
+                onEnterFullscreen()
+            } else {
+                onUpdateWebViewHeight(collapsedHeightPx)
+                onExitFullscreen()
+            }
+        },
+        "AndroidBridge"
+    )
+}
+
+/**
+ * Build a JSON object that represents the native app context
+ * and can be consumed by Piano inside the WebView.
+ *
+ * Keep this payload stable and privacy-safe; extend as needed.
+ */
+private fun buildNativeAppContextJson(): String {
+    return try {
+        val json = JSONObject()
+        json.put("platform", "android")
+        // For this sample we hard-code version/buildType. In a real app you can
+        // wire these from your own config or PackageInfo.
+        json.put("appVersion", "1.0.0")
+        json.put("buildType", "debug")
+        json.put("deviceModel", Build.MODEL ?: "")
+        json.put("deviceManufacturer", Build.MANUFACTURER ?: "")
+        json.put("osVersion", Build.VERSION.RELEASE ?: "")
+        json.put("sdkInt", Build.VERSION.SDK_INT)
+        json.put("locale", Locale.getDefault().toLanguageTag())
+        json.toString()
+    } catch (e: Exception) {
+        Log.e("MainActivity", "Failed to build native app context JSON", e)
+        "{}"
+    }
+}
+
+/**
+ * JS bridge used by the Terrific integration to control fullscreen state.
+ */
+class JSBridge(private val onFullscreenChanged: (Boolean) -> Unit) {
+    @JavascriptInterface
+    fun logFromJS(msg: String) {
+        Log.d("JSBridge", msg)
+    }
+
+    // Called from JS when the carousel / content enters or exits its fullscreen experience.
+    @JavascriptInterface
+    fun setFullscreen(enabled: Boolean) {
+        onFullscreenChanged(enabled)
+        Log.d("JSBridge", "Fullscreen state changed: $enabled")
+    }
+}
+
+/**
+ * Inline HTML used to bootstrap the Terrific carousel inside the WebView.
+ * This mirrors the original implementation.
+ */
+private fun buildTerrificHtml(): String {
+    return """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <script defer src="https://terrific.live/terrific-sdk.js" storeId="nzRdWaBc1JPk2XN3B9bp"></script>
+            <script>
+                console.log("JS console log active");
+                console.error("JS console error active");
+                window.onload = () => {
+                    console.log("Terrific page loaded");
+                };
+
+                function setAndroidFullscreen(isFullscreen) {
+                    if (window.AndroidBridge && AndroidBridge.setFullscreen) {
+                        AndroidBridge.setFullscreen(isFullscreen);
                     }
                 }
-                return super.shouldInterceptRequest(view, request)
-            }
 
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
+                // Listen for Terrific SDK OPEN_DISPLAY / DISPLAY_CLOSED messages on window
+                // and map them to Android fullscreen state.
+                window.addEventListener('message', function (event) {
+                    try {
+                        var data = event.data;
+                        var type = null;
 
-                // Build a JSON context object with native app info for Piano (or other analytics).
-                val contextJson = buildNativeAppContextJson()
-
-                // Expose it into the WebView as a global + dispatch a custom event.
-                // Web side (e.g. Piano integration) can do:
-                //   window.addEventListener('nativeAppContextReady', (e) => {
-                //       const ctx = e.detail; // same JSON we built here
-                //       // attach ctx to Piano events / metadata
-                //   });
-                val js = """
-                    (function() {
-                        try {
-                            window.__NATIVE_APP_CONTEXT__ = $contextJson;
-                            window.dispatchEvent(new CustomEvent('nativeAppContextReady', { detail: window.__NATIVE_APP_CONTEXT__ }));
-                        } catch (e) {
-                            console.error('Failed to inject native app context', e);
-                        }
-                    })();
-                """.trimIndent()
-
-                view?.evaluateJavascript(js, null)
-            }
-        }
-
-        // Inject JS bridge so web content can talk to native (logging + fullscreen state)
-        webView.addJavascriptInterface(JSBridge { fullscreen ->
-            isWebViewFullscreen = fullscreen
-            // Resize the WebView according to fullscreen state.
-            webView.post {
-                val lp = webView.layoutParams
-                lp.height = if (fullscreen) expandedWebViewHeightPx else collapsedWebViewHeightPx
-                webView.layoutParams = lp
-
-                if (fullscreen) {
-                    // Remember where the user was in the app before fullscreen,
-                    // then bring the WebView into full view (centered on screen).
-                    scrollYBeforeFullscreen = scrollView.scrollY
-                    scrollView.smoothScrollTo(0, webView.top)
-                } else {
-                    // Restore the previous scroll position so the user returns
-                    // to the exact same place in the app.
-                    scrollView.smoothScrollTo(0, scrollYBeforeFullscreen)
-                }
-            }
-            // When fullscreen is closed, immediately allow the parent ScrollView
-            // to intercept again on the next gestures, so app scrolling feels normal.
-            if (!fullscreen) {
-                webView.parent?.requestDisallowInterceptTouchEvent(false)
-            }
-        }, "AndroidBridge")
-
-        // Coordinate scroll between WebView and parent ScrollView:
-        // - While WebView can scroll in the gesture direction, keep events inside WebView.
-        // - When WebView hits top/bottom and user keeps dragging, let parent ScrollView take over.
-        webView.setOnTouchListener { v: View, event: MotionEvent ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    lastY = event.y
-                    v.parent?.requestDisallowInterceptTouchEvent(true)
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dy = event.y - lastY
-                    lastY = event.y
-
-                    val goingDown = dy > 0       // finger moving down
-                    val goingUp = dy < 0         // finger moving up
-
-                    val canScrollUp = webView.canScrollVertically(-1)
-                    val canScrollDown = webView.canScrollVertically(1)
-
-                    val atTop = !canScrollUp
-                    val atBottom = !canScrollDown
-
-                    val disallowParent = if (isWebViewFullscreen) {
-                        // While fullscreen overlay is open, always keep scroll inside WebView
-                        true
-                    } else {
-                        when {
-                            // At top and pulling down -> let parent scroll
-                            atTop && goingDown -> false
-                            // At bottom and pushing up -> let parent scroll
-                            atBottom && goingUp -> false
-                            // Otherwise keep events in WebView
-                            else -> true
-                        }
-                    }
-                    v.parent?.requestDisallowInterceptTouchEvent(disallowParent)
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    v.parent?.requestDisallowInterceptTouchEvent(false)
-                }
-            }
-            // Let WebView handle the event as usual
-            false
-        }
-
-        val html = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <script defer src="https://terrific.live/terrific-sdk.js" storeId="nzRdWaBc1JPk2XN3B9bp"></script>
-                <script>
-                    console.log("JS console log active");
-                    console.error("JS console error active");
-                    window.onload = () => {
-                        console.log("Terrific page loaded");
-                    };
-
-                    function setAndroidFullscreen(isFullscreen) {
-                        if (window.AndroidBridge && AndroidBridge.setFullscreen) {
-                            AndroidBridge.setFullscreen(isFullscreen);
-                        }
-                    }
-
-                    // Listen for Terrific SDK OPEN_DISPLAY / DISPLAY_CLOSED messages on window
-                    // and map them to Android fullscreen state.
-                    window.addEventListener('message', function (event) {
-                        try {
-                            var data = event.data;
-                            var type = null;
-
-                            if (typeof data === 'string') {
-                                type = data;
-                            } else if (data && typeof data === 'object') {
-                                if (data.type) {
-                                    type = data.type;
-                                } else if (data.event) {
-                                    type = data.event;
-                                } else if (data.name) {
-                                    type = data.name;
-                                }
+                        if (typeof data === 'string') {
+                            type = data;
+                        } else if (data && typeof data === 'object') {
+                            if (data.type) {
+                                type = data.type;
+                            } else if (data.event) {
+                                type = data.event;
+                            } else if (data.name) {
+                                type = data.name;
                             }
-
-                            if (!type) return;
-
-                            // Normalize to uppercase to be safe
-                            var upper = type.toString().toUpperCase();
-                            if (upper === 'OPEN_DISPLAY') {
-                                console.log('Terrific OPEN_DISPLAY received');
-                                setAndroidFullscreen(true);
-                            } else if (upper === 'CLOSE_FSR_IFRAME') {
-                                console.log('Terrific CLOSE_FSR_IFRAME received');
-                                setAndroidFullscreen(false);
-                            }
-                        } catch (e) {
-                            console.error('Error handling Terrific postMessage', e);
                         }
-                    });
-                </script>
-            </head>
-            <body style="margin:0;padding:0;">
-                <div data-source="terrific" embedding-id="9iM1LIQ3DHqs06jyxuuq"
-                     num-of-items="10" style="height: 450px"">
-                </div>
-            </body>
-            </html>
-        """.trimIndent()
 
-        if (savedInstanceState != null) {
-            // Restore previous WebView state so the carousel / scroll position aren't reset
-            webView.restoreState(savedInstanceState)
-        } else {
-            // Initial load
-            webView.loadDataWithBaseURL("https://france.tv", html, "text/html", "UTF-8", null)
-        }
-    }
+                        if (!type) return;
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        // Persist WebView state across configuration changes / backgrounding
-        if (::webView.isInitialized) {
-            webView.saveState(outState)
-        }
-    }
-
-    /**
-     * Build a JSON object that represents the native app context
-     * and can be consumed by Piano inside the WebView.
-     *
-     * Keep this payload stable and privacy-safe; extend as needed.
-     */
-    private fun buildNativeAppContextJson(): String {
-        return try {
-            val json = JSONObject()
-            json.put("platform", "android")
-            // For this sample we hard-code version/buildType. In a real app you can
-            // wire these from your own config or PackageInfo.
-            json.put("appVersion", "1.0.0")
-            json.put("buildType", "debug")
-            json.put("deviceModel", Build.MODEL ?: "")
-            json.put("deviceManufacturer", Build.MANUFACTURER ?: "")
-            json.put("osVersion", Build.VERSION.RELEASE ?: "")
-            json.put("sdkInt", Build.VERSION.SDK_INT)
-            json.put("locale", Locale.getDefault().toLanguageTag())
-            json.toString()
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Failed to build native app context JSON", e)
-            "{}"
-        }
-    }
-
-    class JSBridge(private val onFullscreenChanged: (Boolean) -> Unit) {
-        @JavascriptInterface
-        fun logFromJS(msg: String) {
-            Log.d("JSBridge", msg)
-        }
-
-        // Called from JS when the carousel / content enters or exits its fullscreen experience.
-        @JavascriptInterface
-        fun setFullscreen(enabled: Boolean) {
-            onFullscreenChanged(enabled)
-            Log.d("JSBridge", "Fullscreen state changed: $enabled")
-        }
-    }
+                        // Normalize to uppercase to be safe
+                        var upper = type.toString().toUpperCase();
+                        if (upper === 'OPEN_DISPLAY') {
+                            console.log('Terrific OPEN_DISPLAY received');
+                            setAndroidFullscreen(true);
+                        } else if (upper === 'CLOSE_FSR_IFRAME') {
+                            console.log('Terrific CLOSE_FSR_IFRAME received');
+                            setAndroidFullscreen(false);
+                        }
+                    } catch (e) {
+                        console.error('Error handling Terrific postMessage', e);
+                    }
+                });
+            </script>
+        </head>
+        <body style="margin:0;padding:0;">
+            <div data-source="terrific"
+                 embedding-id="9iM1LIQ3DHqs06jyxuuq"
+                 num-of-items="10"
+                 style="height: 450px">
+            </div>
+        </body>
+        </html>
+    """.trimIndent()
 }

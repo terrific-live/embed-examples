@@ -21,12 +21,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -64,13 +65,14 @@ class MainActivity : ComponentActivity() {
 
 /**
  * Top-level composable that recreates the old XML layout using Jetpack Compose:
- * - Scrollable column
+ * - Scrollable LazyColumn
  * - Native header/body/footer blocks
  * - Embedded WebView for the Terrific carousel
  */
 @Composable
 private fun TerrificEmbedScreen() {
-    val scrollState = rememberScrollState()
+    val context = LocalContext.current
+    val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
@@ -80,103 +82,135 @@ private fun TerrificEmbedScreen() {
 
     // Heights in dp – keep content tall enough to scroll, but lighter for WebView/Chromium tiling.
     // Using 400dp instead of 800dp reduces GPU tile memory pressure, especially on emulators.
-    val headerHeightDp = 400.dp
-    val bodyHeightDp = 400.dp
+    val headerHeightDp = 600.dp
+    val bodyHeightDp = 600.dp
     val collapsedWebViewHeightDp = 450.dp
     val screenHeightDp = configuration.screenHeightDp.dp
 
     // Store heights and scroll offsets in pixels so they line up with WebView/layout
     val collapsedWebViewHeightPx = with(density) { collapsedWebViewHeightDp.roundToPx() }
     val expandedWebViewHeightPx = with(density) { screenHeightDp.roundToPx() }
-    val webViewTopOffsetPx = with(density) { (headerHeightDp + bodyHeightDp).roundToPx() }
 
     var webViewHeightPx by remember { mutableIntStateOf(collapsedWebViewHeightPx) }
-    var scrollYBeforeFullscreen by remember { mutableIntStateOf(0) }
 
-    // Derived dp for Compose layout
-    val webViewHeightDp = with(density) { webViewHeightPx.toDp() }
+    // Remember the list position before entering fullscreen so we can restore it.
+    var previousIndex by remember { mutableIntStateOf(0) }
+    var previousOffset by remember { mutableIntStateOf(0) }
+    // Index of the LazyColumn item that hosts the WebView (header=0, body=1, webview=2, footer=3).
+    val webViewItemIndex = 2
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            // When the carousel is fullscreen, disable parent scrolling so all scroll stays in WebView.
-            .verticalScroll(scrollState, enabled = !isWebViewFullscreen)
-    ) {
-        // Native header title
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(headerHeightDp)
-                .background(Color(0xFFFFECE4))
-                .padding(24.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Text(
-                text = "Native header above WebView",
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-        }
+    // Persistent WebView instance for this screen, independent of LazyColumn item recycling.
+    val webView = remember { WebView(context) }
 
-        // Native header body
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(bodyHeightDp)
-                .background(Color(0xFFE4F2FF))
-                .padding(24.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Text(
-                text = "Scroll down to reach the embedded Terrific carousel. This area is pure native UI on top of the WebView.",
-                fontSize = 18.sp,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-        }
-
-        // WebView embedded inside Compose
-        TerrificWebView(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(webViewHeightDp),
-            webViewHeightPx = webViewHeightPx,
+    // Configure WebView and load HTML once.
+    LaunchedEffect(Unit) {
+        configureTerrificWebView(
+            webView = webView,
+            collapsedHeightPx = collapsedWebViewHeightPx,
+            expandedHeightPx = expandedWebViewHeightPx,
             onUpdateWebViewHeight = { newHeightPx ->
                 webViewHeightPx = newHeightPx
             },
-            collapsedHeightPx = collapsedWebViewHeightPx,
-            expandedHeightPx = expandedWebViewHeightPx,
             onEnterFullscreen = {
-                // Lock parent scroll and bring WebView fully into view.
                 isWebViewFullscreen = true
                 coroutineScope.launch {
-                    scrollYBeforeFullscreen = scrollState.value
-                    scrollState.animateScrollTo(webViewTopOffsetPx)
+                    previousIndex = listState.firstVisibleItemIndex
+                    previousOffset = listState.firstVisibleItemScrollOffset
+                    listState.animateScrollToItem(webViewItemIndex)
                 }
             },
             onExitFullscreen = {
-                // Re-enable parent scroll and restore previous scroll position.
                 isWebViewFullscreen = false
                 coroutineScope.launch {
-                    scrollState.animateScrollTo(scrollYBeforeFullscreen)
+                    listState.animateScrollToItem(previousIndex, previousOffset)
                 }
             }
         )
 
-        // Native footer
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(400.dp)
-            .background(Color(0xFFE8FFE4))
-                .padding(24.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Text(
-                text = "Native footer below WebView",
-                fontSize = 16.sp,
-                color = MaterialTheme.colorScheme.onBackground
+        val html = buildTerrificHtml()
+        webView.loadDataWithBaseURL(
+            "https://france.tv",
+            html,
+            "text/html",
+            "UTF-8",
+            null
+        )
+    }
+
+    // Destroy WebView when the screen is disposed to avoid leaks.
+    DisposableEffect(Unit) {
+        onDispose {
+            webView.destroy()
+        }
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        userScrollEnabled = !isWebViewFullscreen
+    ) {
+        // Native header title
+        item {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(headerHeightDp)
+                    .background(Color(0xFFFFECE4))
+                    .padding(24.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(
+                    text = "Native header above WebView",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
+
+        // Native header body
+        item {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(bodyHeightDp)
+                    .background(Color(0xFFE4F2FF))
+                    .padding(24.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(
+                    text = "Scroll down to reach the embedded Terrific carousel. This area is pure native UI on top of the WebView.",
+                    fontSize = 18.sp,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
+
+        // WebView embedded inside LazyColumn; this item may be recycled, but the WebView instance is persistent.
+        item {
+            TerrificWebView(
+                modifier = Modifier.fillMaxWidth(),
+                webView = webView,
+                webViewHeightPx = webViewHeightPx
             )
+        }
+
+        // Native footer
+        item {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(400.dp)
+                    .background(Color(0xFFE8FFE4))
+                    .padding(24.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(
+                    text = "Native footer below WebView",
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            }
         }
     }
 }
@@ -188,34 +222,15 @@ private fun TerrificEmbedScreen() {
 @Composable
 private fun TerrificWebView(
     modifier: Modifier,
-    webViewHeightPx: Int,
-    onUpdateWebViewHeight: (Int) -> Unit,
-    collapsedHeightPx: Int,
-    expandedHeightPx: Int,
-    onEnterFullscreen: () -> Unit,
-    onExitFullscreen: () -> Unit
+    webView: WebView,
+    webViewHeightPx: Int
 ) {
-    val context = LocalContext.current
-
-    // Keep a single WebView instance across recompositions
-    val webView = remember { WebView(context) }
-
-    // Track whether we've already done the initial load
-    var didInitialLoad by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    val webViewHeightDp = with(density) { webViewHeightPx.toDp() }
 
     AndroidView(
-        modifier = modifier,
-        factory = {
-            configureTerrificWebView(
-                webView = webView,
-                collapsedHeightPx = collapsedHeightPx,
-                expandedHeightPx = expandedHeightPx,
-                onUpdateWebViewHeight = onUpdateWebViewHeight,
-                onEnterFullscreen = onEnterFullscreen,
-                onExitFullscreen = onExitFullscreen
-            )
-            webView
-        },
+        modifier = modifier.height(webViewHeightDp),
+        factory = { webView },
         update = { view ->
             // Keep layout params in sync with current height
             val lp = view.layoutParams
@@ -225,21 +240,6 @@ private fun TerrificWebView(
             }
         }
     )
-
-    // Initial HTML load only once
-    LaunchedEffect(Unit) {
-        if (!didInitialLoad) {
-            didInitialLoad = true
-            val html = buildTerrificHtml()
-            webView.loadDataWithBaseURL(
-                "https://france.tv",
-                html,
-                "text/html",
-                "UTF-8",
-                null
-            )
-        }
-    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")

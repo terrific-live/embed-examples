@@ -7,122 +7,156 @@ import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.terrificembedexample_kotlin.ui.theme.TerrificEmbedExampleKothlinTheme
 import kotlinx.coroutines.launch
-import org.json.JSONObject
-import java.util.Locale
 
 class MainActivity : ComponentActivity() {
-
-    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         setContent {
             TerrificEmbedExampleKothlinTheme {
-                TerrificEmbedScreen()
+                MainScreen()
             }
         }
     }
 }
 
-/**
- * Top-level composable that recreates the old XML layout using Jetpack Compose:
- * - Scrollable LazyColumn
- * - Native header/body/footer blocks
- * - Embedded WebView for the Terrific carousel
- */
 @Composable
-private fun TerrificEmbedScreen() {
+fun MainScreen() {
+    var selectedTab by remember { mutableIntStateOf(0) }
+
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    icon = { Text("Terrific") },
+                    label = { Text("Home") },
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 }
+                )
+                NavigationBarItem(
+                    icon = { Text("Empty") },
+                    label = { Text("Other") },
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 }
+                )
+            }
+        }
+    ) { paddingValues ->
+        Box(modifier = Modifier.padding(paddingValues)) {
+            when (selectedTab) {
+                0 -> TerrificScreen()
+                1 -> EmptyScreen()
+            }
+        }
+    }
+}
+
+@Composable
+fun TerrificScreen() {
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
 
-    // Track whether the Terrific carousel is in fullscreen mode.
     var isWebViewFullscreen by remember { mutableStateOf(false) }
 
-    // Heights in dp – keep content tall enough to scroll, but lighter for WebView/Chromium tiling.
-    // Using 400dp instead of 800dp reduces GPU tile memory pressure, especially on emulators.
-    val headerHeightDp = 600.dp
-    val bodyHeightDp = 600.dp
     val collapsedWebViewHeightDp = 450.dp
     val screenHeightDp = configuration.screenHeightDp.dp
 
-    // Store heights and scroll offsets in pixels so they line up with WebView/layout
     val collapsedWebViewHeightPx = with(density) { collapsedWebViewHeightDp.roundToPx() }
     val expandedWebViewHeightPx = with(density) { screenHeightDp.roundToPx() }
 
     var webViewHeightPx by remember { mutableIntStateOf(collapsedWebViewHeightPx) }
 
-    // Remember the list position before entering fullscreen so we can restore it.
     var previousIndex by remember { mutableIntStateOf(0) }
     var previousOffset by remember { mutableIntStateOf(0) }
-    // Index of the LazyColumn item that hosts the WebView (header=0, body=1, webview=2, footer=3).
-    val webViewItemIndex = 2
+    val webViewItemIndex = 2 // Terrific est en 3ème position (index 2)
 
-    // Persistent WebView instance for this screen, independent of LazyColumn item recycling.
     val webView = remember { WebView(context) }
+    var webViewReady by remember { mutableStateOf(false) }
+    var pendingWebViewHeightPx by remember { mutableStateOf<Int?>(null) }
+    var pendingFullscreenState by remember { mutableStateOf<Boolean?>(null) }
 
-    // Configure WebView and load HTML once.
+    val enterFullscreen: () -> Unit = {
+        isWebViewFullscreen = true
+        coroutineScope.launch {
+            previousIndex = listState.firstVisibleItemIndex
+            previousOffset = listState.firstVisibleItemScrollOffset
+            listState.animateScrollToItem(webViewItemIndex)
+        }
+    }
+
+    val exitFullscreen: () -> Unit = {
+        isWebViewFullscreen = false
+        coroutineScope.launch {
+            listState.animateScrollToItem(previousIndex, previousOffset)
+        }
+    }
+
     LaunchedEffect(Unit) {
         configureTerrificWebView(
             webView = webView,
             collapsedHeightPx = collapsedWebViewHeightPx,
             expandedHeightPx = expandedWebViewHeightPx,
             onUpdateWebViewHeight = { newHeightPx ->
-                webViewHeightPx = newHeightPx
+                if (webViewReady) {
+                    webViewHeightPx = newHeightPx
+                } else {
+                    // Defer height jumps until we have the first visual frame.
+                    pendingWebViewHeightPx = newHeightPx
+                }
             },
             onEnterFullscreen = {
-                isWebViewFullscreen = true
-                coroutineScope.launch {
-                    previousIndex = listState.firstVisibleItemIndex
-                    previousOffset = listState.firstVisibleItemScrollOffset
-                    listState.animateScrollToItem(webViewItemIndex)
+                if (webViewReady) {
+                    enterFullscreen()
+                } else {
+                    pendingFullscreenState = true
                 }
             },
             onExitFullscreen = {
-                isWebViewFullscreen = false
-                coroutineScope.launch {
-                    listState.animateScrollToItem(previousIndex, previousOffset)
+                if (webViewReady) {
+                    exitFullscreen()
+                } else {
+                    pendingFullscreenState = false
+                }
+            },
+            onFirstVisualCommit = {
+                if (!webViewReady) {
+                    webViewReady = true
+                }
+
+                pendingWebViewHeightPx?.let { pendingHeight ->
+                    webViewHeightPx = pendingHeight
+                    pendingWebViewHeightPx = null
+                }
+
+                pendingFullscreenState?.let { pending ->
+                    pendingFullscreenState = null
+                    if (pending) enterFullscreen() else exitFullscreen()
                 }
             }
         )
@@ -137,7 +171,6 @@ private fun TerrificEmbedScreen() {
         )
     }
 
-    // Destroy WebView when the screen is disposed to avoid leaks.
     DisposableEffect(Unit) {
         onDispose {
             webView.destroy()
@@ -149,97 +182,126 @@ private fun TerrificEmbedScreen() {
         modifier = Modifier.fillMaxSize(),
         userScrollEnabled = !isWebViewFullscreen
     ) {
-        // Native header title
+        // Item 1
         item {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(headerHeightDp)
-                    .background(Color(0xFFFFECE4))
-                    .padding(24.dp),
-                contentAlignment = Alignment.CenterStart
+                    .height(100.dp)
+                    .padding(8.dp)
+                    .background(Color(0xFFFFEBEE)),
+                contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "Native header above WebView",
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+                Text("Item 1")
             }
         }
 
-        // Native header body
+        // Item 2
         item {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(bodyHeightDp)
-                    .background(Color(0xFFE4F2FF))
-                    .padding(24.dp),
-                contentAlignment = Alignment.CenterStart
+                    .height(100.dp)
+                    .padding(8.dp)
+                    .background(Color(0xFFFFF3E0)),
+                contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "Scroll down to reach the embedded Terrific carousel. This area is pure native UI on top of the WebView.",
-                    fontSize = 18.sp,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+                Text("Item 2")
             }
         }
 
-        // WebView embedded inside LazyColumn; this item may be recycled, but the WebView instance is persistent.
+        // Item 3 - Terrific WebView
         item {
             TerrificWebView(
                 modifier = Modifier.fillMaxWidth(),
                 webView = webView,
-                webViewHeightPx = webViewHeightPx
+                webViewHeightPx = webViewHeightPx,
+                isReady = webViewReady
             )
         }
 
-        // Native footer
-        item {
+        // Items restants
+        items(20) { index ->
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(400.dp)
-                    .background(Color(0xFFE8FFE4))
-                    .padding(24.dp),
-                contentAlignment = Alignment.CenterStart
+                    .height(100.dp)
+                    .padding(8.dp)
+                    .background(Color(0xFFE3F2FD)),
+                contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "Native footer below WebView",
-                    fontSize = 16.sp,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+                Text("Item ${index + 4}")
             }
         }
     }
 }
 
-/**
- * A composable that hosts the Terrific WebView using AndroidView.
- * It keeps the same JS bridge, header injection, and fullscreen behavior as the View-based version.
- */
+@Composable
+fun EmptyScreen() {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("Empty Screen")
+    }
+}
+
 @Composable
 private fun TerrificWebView(
     modifier: Modifier,
     webView: WebView,
-    webViewHeightPx: Int
+    webViewHeightPx: Int,
+    isReady: Boolean
 ) {
     val density = LocalDensity.current
     val webViewHeightDp = with(density) { webViewHeightPx.toDp() }
 
-    AndroidView(
-        modifier = modifier.height(webViewHeightDp),
-        factory = { webView },
-        update = { view ->
-            // Keep layout params in sync with current height
-            val lp = view.layoutParams
-            if (lp != null && lp.height != webViewHeightPx) {
-                lp.height = webViewHeightPx
-                view.layoutParams = lp
+    val webViewAlpha by animateFloatAsState(
+        targetValue = if (isReady) 1f else 0f,
+        animationSpec = tween(durationMillis = 200),
+        label = "webViewAlpha"
+    )
+
+    val overlayAlpha by animateFloatAsState(
+        targetValue = if (isReady) 0f else 1f,
+        animationSpec = tween(durationMillis = 200),
+        label = "overlayAlpha"
+    )
+
+    Box(
+        modifier = modifier
+            .height(webViewHeightDp)
+    ) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = {
+                webView.apply {
+                    // Keep the WebView mounted and loading, but don't show intermediate blank paints.
+                    alpha = 0f
+                }
+            },
+            update = { view ->
+                view.alpha = webViewAlpha
+                val lp = view.layoutParams
+                if (lp != null && lp.height != webViewHeightPx) {
+                    lp.height = webViewHeightPx
+                    view.layoutParams = lp
+                }
+            }
+        )
+
+        // Overlay until (and slightly through) first paint; fade it out to avoid 1-frame "pop".
+        if (overlayAlpha > 0.01f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .alpha(overlayAlpha),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = Color.White)
             }
         }
-    )
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -249,15 +311,29 @@ private fun configureTerrificWebView(
     expandedHeightPx: Int,
     onUpdateWebViewHeight: (Int) -> Unit,
     onEnterFullscreen: () -> Unit,
-    onExitFullscreen: () -> Unit
+    onExitFullscreen: () -> Unit,
+    onFirstVisualCommit: () -> Unit
 ) {
+    var firstVisualCommitSent = false
+    fun requestFirstVisualCommitCallback(view: WebView?) {
+        val target = view ?: webView
+        if (firstVisualCommitSent) return
+        target.postVisualStateCallback(
+            0L,
+            object : WebView.VisualStateCallback() {
+                override fun onComplete(requestId: Long) {
+                    if (firstVisualCommitSent) return
+                    firstVisualCommitSent = true
+                    onFirstVisualCommit()
+                }
+            }
+        )
+    }
+
     val webSettings: WebSettings = webView.settings
     webSettings.javaScriptEnabled = true
     webSettings.domStorageEnabled = true
     webSettings.mediaPlaybackRequiresUserGesture = false
-
-    // Disable fullscreen playback, keep inline
-    webSettings.setMediaPlaybackRequiresUserGesture(false)
 
     webView.layoutParams = webView.layoutParams?.apply {
         height = collapsedHeightPx
@@ -276,31 +352,22 @@ private fun configureTerrificWebView(
         }
     }
 
-    // Basic WebViewClient: keep default network behavior and just inject our context JSON.
     webView.webViewClient = object : WebViewClient() {
+        override fun onPageCommitVisible(view: WebView?, url: String?) {
+            super.onPageCommitVisible(view, url)
+            // Commit-visible does not guarantee Terrific content has painted yet.
+            // Wait for the first visual state callback (i.e. first draw).
+            requestFirstVisualCommitCallback(view)
+        }
+
         override fun onPageFinished(view: WebView?, url: String?) {
             super.onPageFinished(view, url)
-
-            // Build a JSON context object with native app info for Piano (or other analytics).
-            val contextJson = buildNativeAppContextJson()
-
-            // Expose it into the WebView as a global + dispatch a custom event.
-            val js = """
-                (function() {
-                    try {
-                        window.__NATIVE_APP_CONTEXT__ = $contextJson;
-                        window.dispatchEvent(new CustomEvent('nativeAppContextReady', { detail: window.__NATIVE_APP_CONTEXT__ }));
-                    } catch (e) {
-                        console.error('Failed to inject native app context', e);
-                    }
-                })();
-            """.trimIndent()
-
-            view?.evaluateJavascript(js, null)
+            Log.d("WebView", "Page finished loading")
+            // Fallback in case commit-visible isn't fired for some reason.
+            requestFirstVisualCommitCallback(view)
         }
     }
 
-    // Inject JS bridge so web content can talk to native (logging + fullscreen state)
     webView.addJavascriptInterface(
         JSBridge { fullscreen ->
             if (fullscreen) {
@@ -315,42 +382,12 @@ private fun configureTerrificWebView(
     )
 }
 
-/**
- * Build a JSON object that represents the native app context
- * and can be consumed by Piano inside the WebView.
- *
- * Keep this payload stable and privacy-safe; extend as needed.
- */
-private fun buildNativeAppContextJson(): String {
-    return try {
-        val json = JSONObject()
-        json.put("platform", "android")
-        // For this sample we hard-code version/buildType. In a real app you can
-        // wire these from your own config or PackageInfo.
-        json.put("appVersion", "1.0.0")
-        json.put("buildType", "debug")
-        json.put("deviceModel", Build.MODEL ?: "")
-        json.put("deviceManufacturer", Build.MANUFACTURER ?: "")
-        json.put("osVersion", Build.VERSION.RELEASE ?: "")
-        json.put("sdkInt", Build.VERSION.SDK_INT)
-        json.put("locale", Locale.getDefault().toLanguageTag())
-        json.toString()
-    } catch (e: Exception) {
-        Log.e("MainActivity", "Failed to build native app context JSON", e)
-        "{}"
-    }
-}
-
-/**
- * JS bridge used by the Terrific integration to control fullscreen state.
- */
 class JSBridge(private val onFullscreenChanged: (Boolean) -> Unit) {
     @JavascriptInterface
     fun logFromJS(msg: String) {
         Log.d("JSBridge", msg)
     }
 
-    // Called from JS when the carousel / content enters or exits its fullscreen experience.
     @JavascriptInterface
     fun setFullscreen(enabled: Boolean) {
         onFullscreenChanged(enabled)
@@ -358,10 +395,6 @@ class JSBridge(private val onFullscreenChanged: (Boolean) -> Unit) {
     }
 }
 
-/**
- * Inline HTML used to bootstrap the Terrific carousel inside the WebView.
- * This mirrors the original implementation.
- */
 private fun buildTerrificHtml(): String {
     return """
         <!DOCTYPE html>
@@ -371,7 +404,6 @@ private fun buildTerrificHtml(): String {
             <script defer src="https://terrific.live/terrific-sdk.js" storeId="nzRdWaBc1JPk2XN3B9bp"></script>
             <script>
                 console.log("JS console log active");
-                console.error("JS console error active");
                 window.onload = () => {
                     console.log("Terrific page loaded");
                 };
@@ -382,8 +414,6 @@ private fun buildTerrificHtml(): String {
                     }
                 }
 
-                // Listen for Terrific SDK OPEN_DISPLAY / DISPLAY_CLOSED messages on window
-                // and map them to Android fullscreen state.
                 window.addEventListener('message', function (event) {
                     try {
                         var data = event.data;
@@ -403,7 +433,6 @@ private fun buildTerrificHtml(): String {
 
                         if (!type) return;
 
-                        // Normalize to uppercase to be safe
                         var upper = type.toString().toUpperCase();
                         if (upper === 'OPEN_DISPLAY') {
                             console.log('Terrific OPEN_DISPLAY received');

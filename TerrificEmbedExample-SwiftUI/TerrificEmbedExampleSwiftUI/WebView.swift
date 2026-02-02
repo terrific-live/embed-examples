@@ -5,7 +5,23 @@ import os
 struct WebView: UIViewRepresentable {
     let storeId: String
     let embeddingId: String
+    let onEvent: (TerrificEvent) -> Void
     private let logger = Logger(subsystem: "com.yourapp.terrific", category: "WebView")
+
+    enum TerrificEvent: String {
+        case openDisplay = "OPEN_DISPLAY"
+        case closeFsrIframe = "CLOSE_FSR_IFRAME"
+    }
+
+    init(
+        storeId: String,
+        embeddingId: String,
+        onEvent: @escaping (TerrificEvent) -> Void = { _ in }
+    ) {
+        self.storeId = storeId
+        self.embeddingId = embeddingId
+        self.onEvent = onEvent
+    }
 
     func makeUIView(context: Context) -> WKWebView {
         logger.log("🚀 Creating WKWebView with JS console bridge...")
@@ -24,6 +40,7 @@ struct WebView: UIViewRepresentable {
         // ✅ Set up JavaScript-to-Swift logging bridge
         let userContentController = WKUserContentController()
         userContentController.add(context.coordinator, name: "logHandler")
+        userContentController.add(context.coordinator, name: "terrificEvent")
 
         // Override console.log to forward messages to Swift
         let jsBridge = """
@@ -47,6 +64,46 @@ struct WebView: UIViewRepresentable {
         """
         let script = WKUserScript(source: jsBridge, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         userContentController.addUserScript(script)
+
+        // Listen to window.postMessage events and forward key Terrific events to Swift.
+        // Mirrors the Kotlin sample logic (string payload OR {type|event|name}).
+        let terrificEventBridge = """
+        (function() {
+            if (window.__terrificEventBridgeInstalled) return;
+            window.__terrificEventBridgeInstalled = true;
+
+            function extractType(data) {
+                if (typeof data === 'string') return data;
+                if (data && typeof data === 'object') {
+                    if (data.type) return data.type;
+                    if (data.event) return data.event;
+                    if (data.name) return data.name;
+                }
+                return null;
+            }
+
+            window.addEventListener('message', function (event) {
+                try {
+                    var type = extractType(event.data);
+                    if (!type) return;
+
+                    var upper = type.toString().toUpperCase();
+                    if (upper === 'OPEN_DISPLAY' || upper === 'CLOSE_FSR_IFRAME') {
+                        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.terrificEvent) {
+                            window.webkit.messageHandlers.terrificEvent.postMessage({ type: upper });
+                        }
+                    }
+                } catch (e) {
+                    // Best-effort: avoid breaking host page if something goes wrong.
+                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.logHandler) {
+                        window.webkit.messageHandlers.logHandler.postMessage("JS ERROR: Error handling Terrific postMessage " + e);
+                    }
+                }
+            });
+        })();
+        """
+        let terrificEventScript = WKUserScript(source: terrificEventBridge, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        userContentController.addUserScript(terrificEventScript)
 
         config.userContentController = userContentController
 
@@ -81,20 +138,54 @@ struct WebView: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(logger: logger)
+        Coordinator(logger: logger, onEvent: onEvent)
     }
 
     // MARK: - Coordinator (Navigation + JS Bridge)
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         private let logger: Logger
-        init(logger: Logger) { self.logger = logger }
+        private let onEvent: (TerrificEvent) -> Void
+
+        init(logger: Logger, onEvent: @escaping (TerrificEvent) -> Void) {
+            self.logger = logger
+            self.onEvent = onEvent
+        }
 
         // Called whenever JS posts a message via window.webkit.messageHandlers.logHandler
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            if let msg = message.body as? String {
-                print("🪵 \(msg)")
-                logger.log("🪵 JS: \(msg, privacy: .public)")
+            switch message.name {
+            case "logHandler":
+                if let msg = message.body as? String {
+                    print("🪵 \(msg)")
+                    logger.log("🪵 JS: \(msg, privacy: .public)")
+                }
+
+            case "terrificEvent":
+                guard let type = Self.extractTerrificType(from: message.body) else { return }
+                guard let event = TerrificEvent(rawValue: type) else { return }
+
+                logger.log("🎬 Terrific event: \(event.rawValue, privacy: .public)")
+                onEvent(event)
+
+            default:
+                break
             }
+        }
+
+        private static func extractTerrificType(from body: Any) -> String? {
+            if let s = body as? String {
+                return s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            }
+
+            if let dict = body as? [String: Any] {
+                let raw =
+                    (dict["type"] as? String) ??
+                    (dict["event"] as? String) ??
+                    (dict["name"] as? String)
+                return raw?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            }
+
+            return nil
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {

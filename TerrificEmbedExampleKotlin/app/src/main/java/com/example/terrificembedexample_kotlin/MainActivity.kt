@@ -1,9 +1,12 @@
 package com.example.terrificembedexample_kotlin
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -31,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.terrificembedexample_kotlin.ui.theme.TerrificEmbedExampleKothlinTheme
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,6 +87,7 @@ fun TerrificScreen() {
     val configuration = LocalConfiguration.current
 
     var isWebViewFullscreen by remember { mutableStateOf(false) }
+    var isWebViewHorizontalGestureActive by remember { mutableStateOf(false) }
 
     val collapsedWebViewHeightDp = 450.dp
     val screenHeightDp = configuration.screenHeightDp.dp
@@ -96,7 +101,7 @@ fun TerrificScreen() {
     var previousOffset by remember { mutableIntStateOf(0) }
     val webViewItemIndex = 2 // Terrific est en 3ème position (index 2)
 
-    val webView = remember { WebView(context) }
+    val webView = remember { AxisLockWebView(context) }
     var webViewReady by remember { mutableStateOf(false) }
     var pendingWebViewHeightPx by remember { mutableStateOf<Int?>(null) }
     var pendingFullscreenState by remember { mutableStateOf<Boolean?>(null) }
@@ -114,6 +119,12 @@ fun TerrificScreen() {
         isWebViewFullscreen = false
         coroutineScope.launch {
             listState.animateScrollToItem(previousIndex, previousOffset)
+        }
+    }
+
+    LaunchedEffect(webView) {
+        webView.onHorizontalGestureActiveChanged = { active ->
+            isWebViewHorizontalGestureActive = active
         }
     }
 
@@ -173,6 +184,9 @@ fun TerrificScreen() {
 
     DisposableEffect(Unit) {
         onDispose {
+            if (webView is AxisLockWebView) {
+                webView.onHorizontalGestureActiveChanged = null
+            }
             webView.destroy()
         }
     }
@@ -180,7 +194,9 @@ fun TerrificScreen() {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        userScrollEnabled = !isWebViewFullscreen
+        // While a horizontal gesture is active inside the WebView, temporarily disable the
+        // parent vertical scroll so the gesture doesn't "leak" into vertical movement.
+        userScrollEnabled = !isWebViewFullscreen && !isWebViewHorizontalGestureActive
     ) {
         // Item 1
         item {
@@ -456,4 +472,86 @@ private fun buildTerrificHtml(): String {
         </body>
         </html>
     """.trimIndent()
+}
+
+private enum class AxisLock {
+    NONE,
+    HORIZONTAL,
+    VERTICAL
+}
+
+/**
+ * WebView wrapper that "locks" axis once the gesture direction is clear.
+ *
+ * Why this exists:
+ * - When the WebView contains a horizontal carousel, small vertical drift often causes the parent
+ *   (Compose LazyColumn) to start scrolling vertically.
+ * - Once we detect a horizontal intent, we keep the gesture horizontal by freezing Y in the touch
+ *   stream and we notify Compose so it can temporarily disable its vertical scroll.
+ */
+private class AxisLockWebView(context: Context) : WebView(context) {
+    var onHorizontalGestureActiveChanged: ((Boolean) -> Unit)? = null
+
+    private val touchSlop: Int = ViewConfiguration.get(context).scaledTouchSlop
+    private var startX = 0f
+    private var startY = 0f
+    private var axisLock: AxisLock = AxisLock.NONE
+    private var horizontalActive = false
+
+    private fun setHorizontalActive(active: Boolean) {
+        if (horizontalActive == active) return
+        horizontalActive = active
+        onHorizontalGestureActiveChanged?.invoke(active)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                startX = event.x
+                startY = event.y
+                axisLock = AxisLock.NONE
+                setHorizontalActive(false)
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (axisLock == AxisLock.NONE) {
+                    val dx = event.x - startX
+                    val dy = event.y - startY
+                    val absDx = abs(dx)
+                    val absDy = abs(dy)
+
+                    // Decide only once the user moved enough to be intentional.
+                    if (absDx > touchSlop || absDy > touchSlop) {
+                        // Add a small bias to reduce accidental lock flips on diagonals.
+                        axisLock = when {
+                            absDx > absDy * 1.2f -> AxisLock.HORIZONTAL
+                            absDy > absDx * 1.2f -> AxisLock.VERTICAL
+                            else -> AxisLock.NONE
+                        }
+                    }
+                }
+
+                if (axisLock == AxisLock.HORIZONTAL) {
+                    setHorizontalActive(true)
+
+                    // Freeze Y to prevent vertical scrolling during horizontal gestures.
+                    val adjusted = MotionEvent.obtain(event)
+                    try {
+                        adjusted.setLocation(event.x, startY)
+                        return super.onTouchEvent(adjusted)
+                    } finally {
+                        adjusted.recycle()
+                    }
+                }
+            }
+
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                axisLock = AxisLock.NONE
+                setHorizontalActive(false)
+            }
+        }
+
+        return super.onTouchEvent(event)
+    }
 }

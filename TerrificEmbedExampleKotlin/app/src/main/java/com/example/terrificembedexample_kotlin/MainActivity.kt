@@ -504,6 +504,11 @@ private class AxisLockWebView(context: Context) : WebView(context) {
         onHorizontalGestureActiveChanged?.invoke(active)
     }
 
+    private fun requestParentDisallowIntercept(disallow: Boolean) {
+        // Helps ensure the gesture stays with the WebView once we detected horizontal intent.
+        parent?.requestDisallowInterceptTouchEvent(disallow)
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -511,6 +516,7 @@ private class AxisLockWebView(context: Context) : WebView(context) {
                 startY = event.y
                 axisLock = AxisLock.NONE
                 setHorizontalActive(false)
+                requestParentDisallowIntercept(false)
             }
 
             MotionEvent.ACTION_MOVE -> {
@@ -521,27 +527,25 @@ private class AxisLockWebView(context: Context) : WebView(context) {
                     val absDy = abs(dy)
 
                     // Decide only once the user moved enough to be intentional.
-                    if (absDx > touchSlop || absDy > touchSlop) {
-                        // Add a small bias to reduce accidental lock flips on diagonals.
-                        axisLock = when {
-                            absDx > absDy * 1.2f -> AxisLock.HORIZONTAL
-                            absDy > absDx * 1.2f -> AxisLock.VERTICAL
-                            else -> AxisLock.NONE
-                        }
+                    // Note: we bias slightly toward horizontal because this WebView hosts carousels.
+                    val horizontalThreshold = touchSlop * 0.6f
+                    val verticalThreshold = touchSlop * 1.0f
+                    val bias = 1.1f
+
+                    axisLock = when {
+                        absDx > horizontalThreshold && absDx > absDy * bias -> AxisLock.HORIZONTAL
+                        absDy > verticalThreshold && absDy > absDx * bias -> AxisLock.VERTICAL
+                        else -> AxisLock.NONE
                     }
                 }
 
                 if (axisLock == AxisLock.HORIZONTAL) {
                     setHorizontalActive(true)
-
-                    // Freeze Y to prevent vertical scrolling during horizontal gestures.
-                    val adjusted = MotionEvent.obtain(event)
-                    try {
-                        adjusted.setLocation(event.x, startY)
-                        return super.onTouchEvent(adjusted)
-                    } finally {
-                        adjusted.recycle()
-                    }
+                    requestParentDisallowIntercept(true)
+                } else if (axisLock == AxisLock.VERTICAL) {
+                    // Allow parent vertical scroll if the user is clearly scrolling vertically.
+                    setHorizontalActive(false)
+                    requestParentDisallowIntercept(false)
                 }
             }
 
@@ -549,6 +553,7 @@ private class AxisLockWebView(context: Context) : WebView(context) {
             MotionEvent.ACTION_CANCEL -> {
                 axisLock = AxisLock.NONE
                 setHorizontalActive(false)
+                requestParentDisallowIntercept(false)
             }
         }
 

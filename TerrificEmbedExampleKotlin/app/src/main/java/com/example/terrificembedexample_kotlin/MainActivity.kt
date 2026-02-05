@@ -399,9 +399,39 @@ private fun configureTerrificWebView(
 }
 
 class JSBridge(private val onFullscreenChanged: (Boolean) -> Unit) {
+    private val impressionEvents: Set<String> = setOf(
+        "publisher.impression",
+        "TimelineCarouselLoaded",
+        "TimelineOpened",
+        "TimelineAssetViewStarted",
+    )
+
+    private val clickEvents: Set<String> = setOf(
+        "click.action",
+        "TimelineCTAButtonClicked",
+        "TimelineClosed",
+        "TimelineAssetLiked",
+        "TimelineAssetShared",
+        "TimelineCarouselClicked",
+        "TimelinePollVoted",
+        "TimelineProductClicked",
+    )
+
     @JavascriptInterface
     fun logFromJS(msg: String) {
         Log.d("JSBridge", msg)
+    }
+
+    @JavascriptInterface
+    fun onTerrificEvent(eventName: String, payloadJson: String?) {
+        val category = when {
+            impressionEvents.contains(eventName) -> "impression"
+            clickEvents.contains(eventName) -> "click"
+            else -> "other"
+        }
+
+        val payload = payloadJson?.takeIf { it.isNotBlank() }
+        Log.i("TerrificEvent", "category=$category name=$eventName payload=${payload ?: "<none>"}")
     }
 
     @JavascriptInterface
@@ -430,6 +460,54 @@ private fun buildTerrificHtml(): String {
                     }
                 }
 
+                function emitTerrificEvent(eventName, payload) {
+                    try {
+                        if (!window.AndroidBridge || !AndroidBridge.onTerrificEvent) return;
+                        var payloadJson = null;
+                        if (typeof payload === 'undefined') {
+                            payloadJson = null;
+                        } else {
+                            try {
+                                payloadJson = JSON.stringify(payload);
+                            } catch (e) {
+                                payloadJson = String(payload);
+                            }
+                        }
+                        AndroidBridge.onTerrificEvent(String(eventName), payloadJson);
+                    } catch (e) {
+                        console.error('Error emitting Terrific event to Android', e);
+                    }
+                }
+
+                // In case Terrific emits DOM CustomEvents (not only postMessage), listen to known names.
+                (function registerTerrificDomEventListeners() {
+                    var names = [
+                        'publisher.impression',
+                        'TimelineCarouselLoaded',
+                        'TimelineOpened',
+                        'TimelineAssetViewStarted',
+                        'click.action',
+                        'TimelineCTAButtonClicked',
+                        'TimelineClosed',
+                        'TimelineAssetLiked',
+                        'TimelineAssetShared',
+                        'TimelineCarouselClicked',
+                        'TimelinePollVoted',
+                        'TimelineProductClicked'
+                    ];
+
+                    function handler(name) {
+                        return function (e) {
+                            emitTerrificEvent(name, { detail: (e && e.detail) ? e.detail : null });
+                        };
+                    }
+
+                    for (var i = 0; i < names.length; i++) {
+                        window.addEventListener(names[i], handler(names[i]));
+                        document.addEventListener(names[i], handler(names[i]));
+                    }
+                })();
+
                 window.addEventListener('message', function (event) {
                     try {
                         var data = event.data;
@@ -457,6 +535,9 @@ private fun buildTerrificHtml(): String {
                             console.log('Terrific CLOSE_FSR_IFRAME received');
                             setAndroidFullscreen(false);
                         }
+
+                        // Forward any Terrific postMessage event to Android (for logging/analytics wiring).
+                        emitTerrificEvent(type, data);
                     } catch (e) {
                         console.error('Error handling Terrific postMessage', e);
                     }

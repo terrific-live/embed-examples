@@ -171,6 +171,10 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
 
+                    function setPreloader(value) {
+                        document.documentElement.classList.toggle('preloader-visible', value);
+                    }
+
                     // Listen for Terrific SDK OPEN_DISPLAY / DISPLAY_CLOSED messages on window
                     // and map them to Android fullscreen state.
                     window.addEventListener('message', function (event) {
@@ -195,19 +199,28 @@ class MainActivity : AppCompatActivity() {
                             // Normalize to uppercase to be safe
                             var upper = type.toString().toUpperCase();
                             if (upper === 'OPEN_DISPLAY') {
-                                console.log('Terrific OPEN_DISPLAY received');
+                              setPreloader(true);
+                            } else if (upper === 'MARKUP_READY' && data.pageName === 'display') {
                                 setAndroidFullscreen(true);
                             } else if (upper === 'CLOSE_FSR_IFRAME') {
-                                console.log('Terrific CLOSE_FSR_IFRAME received');
                                 setAndroidFullscreen(false);
+                                setPreloader(false);
                             }
                         } catch (e) {
                             console.error('Error handling Terrific postMessage', e);
                         }
                     });
                 </script>
+                <style>
+                  .preloader-visible [data-source="terrific"] {
+                    display: none;
+                  }
+                  #timeline-overlay {
+                    background-color: white !important;
+                  }
+                </style>
             </head>
-            <body style="margin:0;padding:0;">
+            <body>
                 <div data-source="terrific" embedding-id="9iM1LIQ3DHqs06jyxuuq"
                      num-of-items="10" style="height: 450px"">
                 </div>

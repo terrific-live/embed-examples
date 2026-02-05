@@ -1,6 +1,7 @@
 package com.example.terrificembedexample_kotlin
 
 import android.annotation.SuppressLint
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -229,6 +230,13 @@ class MainActivity : AppCompatActivity() {
         if (::webView.isInitialized) {
             webView.saveState(outState)
         }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // We handle orientation/screenSize changes ourselves via layout.
+        // The existing View hierarchy (including WebView) is kept,
+        // and our containers simply get remeasured/relaid out.
     }
 
     /**

@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.*
 import android.widget.ScrollView
 import androidx.appcompat.app.AppCompatActivity
@@ -16,10 +17,10 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var scrollView: ScrollView
+    private lateinit var webViewHost: ViewGroup
+    private lateinit var fullscreenContainer: ViewGroup
     private var lastY: Float = 0f
     private var isWebViewFullscreen: Boolean = false
-    private var collapsedWebViewHeightPx: Int = 0
-    private var expandedWebViewHeightPx: Int = 0
     private var scrollYBeforeFullscreen: Int = 0
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -28,19 +29,9 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         scrollView = findViewById(R.id.rootScrollView)
+        webViewHost = findViewById(R.id.webViewHost)
+        fullscreenContainer = findViewById(R.id.fullscreenContainer)
         webView = findViewById(R.id.webView)
-        // Configure two WebView heights:
-        // - collapsed: initial height inside the scroll (e.g. 800dp)
-        // - expanded: full screen height when Terrific opens fullscreen
-        val displayMetrics = resources.displayMetrics
-        val screenHeight = displayMetrics.heightPixels
-        expandedWebViewHeightPx = screenHeight
-        collapsedWebViewHeightPx = (450 * displayMetrics.density).toInt()
-
-        // Start in collapsed mode so the WebView is NOT full-screen initially.
-        webView.layoutParams = webView.layoutParams.apply {
-            height = collapsedWebViewHeightPx
-        }
 
         val webSettings = webView.settings
         webSettings.javaScriptEnabled = true
@@ -106,28 +97,12 @@ class MainActivity : AppCompatActivity() {
 
         // Inject JS bridge so web content can talk to native (logging + fullscreen state)
         webView.addJavascriptInterface(JSBridge { fullscreen ->
-            isWebViewFullscreen = fullscreen
-            // Resize the WebView according to fullscreen state.
             webView.post {
-                val lp = webView.layoutParams
-                lp.height = if (fullscreen) expandedWebViewHeightPx else collapsedWebViewHeightPx
-                webView.layoutParams = lp
-
                 if (fullscreen) {
-                    // Remember where the user was in the app before fullscreen,
-                    // then bring the WebView into full view (centered on screen).
-                    scrollYBeforeFullscreen = scrollView.scrollY
-                    scrollView.smoothScrollTo(0, webView.top)
+                    enterFullscreen()
                 } else {
-                    // Restore the previous scroll position so the user returns
-                    // to the exact same place in the app.
-                    scrollView.smoothScrollTo(0, scrollYBeforeFullscreen)
+                    exitFullscreen()
                 }
-            }
-            // When fullscreen is closed, immediately allow the parent ScrollView
-            // to intercept again on the next gestures, so app scrolling feels normal.
-            if (!fullscreen) {
-                webView.parent?.requestDisallowInterceptTouchEvent(false)
             }
         }, "AndroidBridge")
 
@@ -279,6 +254,52 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e("MainActivity", "Failed to build native app context JSON", e)
             "{}"
+        }
+    }
+
+    private fun enterFullscreen() {
+        if (isWebViewFullscreen) return
+        isWebViewFullscreen = true
+
+        // Remember where the user was in the app before fullscreen,
+        // so we can restore it when exiting.
+        scrollYBeforeFullscreen = scrollView.scrollY
+
+        // Move the WebView out of the scrollable host into the fullscreen overlay.
+        val parent = webView.parent as? ViewGroup
+        parent?.removeView(webView)
+
+        fullscreenContainer.addView(
+            webView,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        fullscreenContainer.visibility = View.VISIBLE
+    }
+
+    private fun exitFullscreen() {
+        if (!isWebViewFullscreen) return
+        isWebViewFullscreen = false
+
+        // Move the WebView back to its embedded host.
+        val parent = webView.parent as? ViewGroup
+        parent?.removeView(webView)
+
+        webViewHost.addView(
+            webView,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        fullscreenContainer.visibility = View.GONE
+
+        // Restore the previous scroll position so the user returns
+        // to the exact same place in the app.
+        scrollView.post {
+            scrollView.scrollTo(0, scrollYBeforeFullscreen)
         }
     }
 

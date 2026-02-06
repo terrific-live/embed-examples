@@ -157,7 +157,7 @@ class MainActivity : AppCompatActivity() {
             <html>
             <head>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <script defer src="https://terrific.live/terrific-sdk.js" storeId="nzRdWaBc1JPk2XN3B9bp"></script>
+                <script async src="https://stas-0-dev.web.app/terrific-sdk.js" storeId="Hu3EgtKCyYZTzN9kt5Mz"></script>
                 <script>
                     console.log("JS console log active");
                     console.error("JS console error active");
@@ -221,7 +221,7 @@ class MainActivity : AppCompatActivity() {
                 </style>
             </head>
             <body>
-                <div data-source="terrific" embedding-id="9iM1LIQ3DHqs06jyxuuq"
+                <div data-source="terrific" embedding-id="9JHbcxNdy9oJDhGCa9oq"
                      num-of-items="10" style="height: 450px"">
                 </div>
             </body>
@@ -233,7 +233,7 @@ class MainActivity : AppCompatActivity() {
             webView.restoreState(savedInstanceState)
         } else {
             // Initial load
-            webView.loadDataWithBaseURL("https://france.tv", html, "text/html", "UTF-8", null)
+            webView.loadDataWithBaseURL("https://stas-0-dev.web.app", html, "text/html", "UTF-8", null)
         }
     }
 

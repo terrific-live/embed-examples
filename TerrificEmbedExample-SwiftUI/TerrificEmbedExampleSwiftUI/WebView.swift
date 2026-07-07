@@ -5,27 +5,26 @@ import os
 struct WebView: UIViewRepresentable {
     let storeId: String
     let embeddingId: String
+    @Binding var isCarouselVisibleInHost: Bool
+
     private let logger = Logger(subsystem: "com.yourapp.terrific", category: "WebView")
 
     func makeUIView(context: Context) -> WKWebView {
-        logger.log("🚀 Creating WKWebView with JS console bridge...")
+        logger.log("Creating WKWebView with Terrific host visibility bridge...")
 
-        // Configuration with custom scheme handler
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(CustomSchemeHandler(), forURLScheme: "terrific")
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
 
-        // ✅ Enable JavaScript (modern API)
         let pagePrefs = WKWebpagePreferences()
         pagePrefs.allowsContentJavaScript = true
         config.defaultWebpagePreferences = pagePrefs
 
-        // ✅ Set up JavaScript-to-Swift logging bridge
         let userContentController = WKUserContentController()
         userContentController.add(context.coordinator, name: "logHandler")
+        userContentController.add(context.coordinator, name: "terrificBridge")
 
-        // Override console.log to forward messages to Swift
         let jsBridge = """
         (function() {
             const oldLog = console.log;
@@ -45,16 +44,32 @@ struct WebView: UIViewRepresentable {
             };
         })();
         """
-        let script = WKUserScript(source: jsBridge, injectionTime: .atDocumentStart, forMainFrameOnly: false)
-        userContentController.addUserScript(script)
+        userContentController.addUserScript(
+            WKUserScript(source: jsBridge, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        )
+
+        let terrificBridgeScript = """
+        (function() {
+            window.addEventListener('message', function(event) {
+                if (!window.webkit?.messageHandlers?.terrificBridge) return;
+                const data = event.data;
+                if (!data || typeof data !== 'object') return;
+                window.webkit.messageHandlers.terrificBridge.postMessage(data);
+            });
+        })();
+        """
+        userContentController.addUserScript(
+            WKUserScript(source: terrificBridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
 
         config.userContentController = userContentController
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.scrollView.bounces = false
         webView.navigationDelegate = context.coordinator
+        context.coordinator.webView = webView
+        context.coordinator.isCarouselVisibleInHost = isCarouselVisibleInHost
 
-        // ✅ Load Terrific embed HTML
         let html = """
         <!DOCTYPE html>
         <html lang="en">
@@ -72,45 +87,101 @@ struct WebView: UIViewRepresentable {
         </html>
         """
 
-        logger.log("📄 Loading HTML into WebView")
+        logger.log("Loading Terrific embed HTML into WebView")
         webView.loadHTMLString(html, baseURL: URL(string: "https://<your domain>")!)
 
         return webView
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        context.coordinator.updateHostVisibility(isCarouselVisibleInHost)
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(logger: logger)
     }
 
-    // MARK: - Coordinator (Navigation + JS Bridge)
-    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         private let logger: Logger
-        init(logger: Logger) { self.logger = logger }
+        weak var webView: WKWebView?
+        var isCarouselVisibleInHost = false
+        private var isCarouselIframeReady = false
+        private var hostVisibilityReportingStarted = false
 
-        // Called whenever JS posts a message via window.webkit.messageHandlers.logHandler
+        init(logger: Logger) {
+            self.logger = logger
+        }
+
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            if let msg = message.body as? String {
-                print("🪵 \(msg)")
-                logger.log("🪵 JS: \(msg, privacy: .public)")
+            if message.name == "logHandler", let msg = message.body as? String {
+                logger.log("JS: \(msg, privacy: .public)")
+                return
+            }
+
+            guard message.name == "terrificBridge", let payload = message.body as? [String: Any] else {
+                return
+            }
+
+            handleTerrificMessage(payload)
+        }
+
+        func updateHostVisibility(_ isVisible: Bool) {
+            isCarouselVisibleInHost = isVisible
+            guard isCarouselIframeReady else { return }
+            notifyCarouselHostVisible(isVisible)
+        }
+
+        private func handleTerrificMessage(_ payload: [String: Any]) {
+            guard let type = payload["type"] as? String else { return }
+
+            if type == TerrificHostMessages.iframeReady,
+               payload["id"] as? String == TerrificHostMessages.timelineIframeId {
+                logger.log("Received IFRAME_READY — carousel React tree is mounted")
+                isCarouselIframeReady = true
+                startHostVisibilityReportingIfNeeded()
+                return
+            }
+
+            logger.log("Terrific message: \(type, privacy: .public)")
+        }
+
+        private func startHostVisibilityReportingIfNeeded() {
+            guard !hostVisibilityReportingStarted else { return }
+            hostVisibilityReportingStarted = true
+
+            // Defer one tick so polls impression gate listener is attached.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self else { return }
+                self.logger.log("Reporting initial host visibility: \(self.isCarouselVisibleInHost)")
+                self.notifyCarouselHostVisible(self.isCarouselVisibleInHost)
+            }
+        }
+
+        private func notifyCarouselHostVisible(_ isVisible: Bool) {
+            guard let webView else { return }
+
+            let script = "\(TerrificHostMessages.notifyCarouselHostVisibleScript)(\(isVisible));"
+            webView.evaluateJavaScript(script) { _, error in
+                if let error {
+                    self.logger.error("Failed to post CAROUSEL_HOST_VISIBLE: \(error.localizedDescription)")
+                }
             }
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-            logger.log("📡 Navigation started to: \(webView.url?.absoluteString ?? "unknown")")
+            logger.log("Navigation started to: \(webView.url?.absoluteString ?? "unknown")")
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            logger.log("✅ Navigation finished successfully.")
+            logger.log("Navigation finished successfully.")
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            logger.error("❌ Navigation failed: \(error.localizedDescription)")
+            logger.error("Navigation failed: \(error.localizedDescription)")
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            logger.error("❌ Provisional navigation failed: \(error.localizedDescription)")
+            logger.error("Provisional navigation failed: \(error.localizedDescription)")
         }
     }
 }
